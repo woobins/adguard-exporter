@@ -31,8 +31,11 @@ Prometheus reads that 500 as the exporter being **down** (`InstanceDown`), even
 though DNS/DHCP are healthy — a metrics-only fault escalating to a critical alert.
 
 Fix: dedup on the full label tuple (`server,type,ip,mac,hostname,expires_at`) and
-skip rows already emitted this scrape. Also take `d.mu` during `Collect` (it
-previously read `d.leases` unlocked while the worker's `Record` wrote it — a data
-race). Regression test in `internal/metrics/metrics_test.go`.
+skip rows already emitted this scrape. Build the metric set under `d.mu` (the
+worker writes `d.leases` under the same lock — `Collect` previously read it
+unlocked, a data race), then release the lock before sending to the channel so a
+slow scrape can't stall `Record`. The dedup key is an inline struct (allocation-
+free, collision-proof). Regression test in `internal/metrics/metrics_test.go`
+(uses a pedantic registry; verified it fails on the pre-fix collector).
 
 Candidate for upstreaming.
