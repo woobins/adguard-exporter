@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -147,12 +148,28 @@ func (d *DhcpLeasesServer) Record(server string, leases []adguard.DhcpLease) {
 }
 
 func (d *DhcpLeasesServer) Collect(ch chan<- prometheus.Metric) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// AdGuard can hand back duplicate lease rows: an in-place self-update
+	// rebuilds the lease table, and clients behind a MAC-NAT'ing wifi repeater
+	// collapse onto a single bridge MAC. Emitting the same label tuple twice
+	// makes the prometheus registry fail the entire scrape with a hard 500
+	// ("was collected before with the same name and label values"), which
+	// reads as the whole exporter being down. De-duplicate on the full label
+	// set so a duplicate lease is skipped rather than poisoning every metric.
+	seen := make(map[string]struct{})
 	for server, leases := range d.leases {
 		for _, lease := range leases {
 			expires := ""
 			if lease.Expires != nil {
 				expires = lease.Expires.Format(time.RFC3339)
 			}
+			key := strings.Join([]string{server, lease.Type, lease.IP, lease.Mac, lease.Hostname, expires}, "\x00")
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
 			ch <- prometheus.MustNewConstMetric(
 				d.Desc,
 				prometheus.CounterValue,
